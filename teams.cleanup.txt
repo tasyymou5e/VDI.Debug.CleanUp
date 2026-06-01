@@ -1,0 +1,67 @@
+# Requires -Version 7.0
+# Run as Administrator
+
+$WorkingDir = "C:\temp"
+$Bootstrapper = Join-Path $WorkingDir "teamsbootstrapper.exe"
+$MsixPath = Join-Path $WorkingDir "MSTeams-x64.msix"
+
+Write-Host "--- TEAMS VDI PROVISIONING (PowerShell 7 Optimized) ---" -ForegroundColor Cyan
+
+# 1. CLEANUP EXISTING INSTALLATIONS
+Write-Host "[1/5] Removing existing MSTeams packages..." -ForegroundColor Yellow
+
+# Wrap Appx/Dism commands in a native powershell.exe call to bypass PS7 serialization bugs
+$CleanupScriptBlock = {
+    Get-AppxPackage -Name "MSTeams" -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+    Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'MSTeams' } | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+}
+powershell.exe -NoProfile -Command $CleanupScriptBlock
+
+# Use the official bootstrapper cleanup tool
+if (Test-Path $Bootstrapper) {
+    Write-Host "      Running teamsbootstrapper -x..." -ForegroundColor Gray
+    Start-Process -FilePath $Bootstrapper -ArgumentList "-x" -Wait -NoNewWindow
+} else {
+    Write-Host "      [X] ERROR: teamsbootstrapper.exe not found at $Bootstrapper!" -ForegroundColor Red
+}
+
+# 2. PROVISION NEW TEAMS FOR ALL USERS
+Write-Host "`n[2/5] Provisioning New Teams for VDI..." -ForegroundColor Yellow
+if ((Test-Path $Bootstrapper) -and (Test-Path $MsixPath)) {
+    Start-Process -FilePath $Bootstrapper -ArgumentList "-p -o `"$MsixPath`"" -Wait -NoNewWindow
+    # Install Outlook Meeting Add-in
+    Start-Process -FilePath $Bootstrapper -ArgumentList "--installTMA" -Wait -NoNewWindow
+} else {
+    Write-Host "      [X] CRITICAL: Missing Bootstrapper or MSIX file in $WorkingDir" -ForegroundColor Red
+}
+
+# 3. REGISTRY: CONFIGURE VDI OPTIMIZATION
+Write-Host "`n[3/5] Configuring VDI Registry Keys..." -ForegroundColor Yellow
+$RegPath = "HKLM:\SOFTWARE\Microsoft\Teams"
+if (-not (Test-Path $RegPath)) { New-Item -Path $RegPath -Force | Out-Null }
+New-ItemProperty -Path $RegPath -Name "IsWVDEnvironment" -Value 1 -PropertyType DWORD -Force | Out-Null
+
+# 4. SERVICES: CONFIGURE APPREADINESS
+Write-Host "`n[4/5] Configuring AppReadiness Service..." -ForegroundColor Yellow
+Set-Service -Name "AppReadiness" -StartupType Manual
+
+# 5. MISSION VERIFICATION
+Write-Host "`n[5/5] --- MISSION VERIFICATION ---" -ForegroundColor Yellow
+
+# Use PS 5.1 wrapper to fetch accurate, non-deserialized properties
+$VerifyScriptBlock = {
+    $Teams = Get-AppxPackage -Name "MSTeams" -AllUsers
+    if ($Teams) {
+        $Teams | Select-Object Name, PackageUserInformation, Status | Format-List
+    } else {
+        Write-Output "NOT_FOUND"
+    }
+}
+$VerificationResult = powershell.exe -NoProfile -Command $VerifyScriptBlock
+
+if ($VerificationResult -match "NOT_FOUND") {
+    Write-Host "      [X] CRITICAL ERROR: Teams package not found after installation." -ForegroundColor Red
+} else {
+    Write-Output $VerificationResult
+    Write-Host "      [✓] Verification Complete: Ensure PackageUserInformation shows 'Staged'." -ForegroundColor Green
+}

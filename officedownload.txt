@@ -1,0 +1,58 @@
+# Requires -RunAsAdministrator
+
+$ScriptDir = $PSScriptRoot
+$ODTSetup = Join-Path $ScriptDir "setup.exe"
+$XMLConfig = Join-Path $ScriptDir "M365.xml"
+$OfficeDir = Join-Path $ScriptDir "Office"
+
+# Estimated total size in Megabytes (Usually between 3000MB and 3500MB)
+$EstimatedTotalMB = 3300 
+
+if (-not (Test-Path $ODTSetup) -or -not (Test-Path $XMLConfig)) {
+    Write-Host "setup.exe or M365.xml not found in $ScriptDir. Aborting." -ForegroundColor Red
+    exit
+}
+
+Write-Host "Starting Microsoft 365 download..." -ForegroundColor Cyan
+
+# Start the setup.exe process and capture the process object
+$Process = Start-Process -FilePath $ODTSetup -ArgumentList "/download `"$XMLConfig`"" -PassThru
+
+# Loop while the process is still running
+while (-not $Process.HasExited) {
+    $FolderSizeMB = 0
+    
+    # Check if the folder has been created yet
+    if (Test-Path $OfficeDir) {
+        # Calculate current folder size
+        $Files = Get-ChildItem -Path $OfficeDir -Recurse -File -ErrorAction SilentlyContinue
+        if ($Files) {
+            $FolderSizeBytes = ($Files | Measure-Object -Property Length -Sum).Sum
+            $FolderSizeMB = [math]::Round($FolderSizeBytes / 1MB, 2)
+        }
+    }
+
+    # Calculate percentage (capped at 99% since the estimate might be slightly off)
+    $PercentComplete = 0
+    if ($FolderSizeMB -gt 0) {
+        $PercentComplete = [math]::Min([math]::Round(($FolderSizeMB / $EstimatedTotalMB) * 100), 99)
+    }
+
+    # Display dynamic progress bar at the top of the PowerShell console
+    Write-Progress -Activity "Downloading Microsoft 365 Apps (Target: ~$EstimatedTotalMB MB)" `
+                   -Status "Downloaded: $FolderSizeMB MB" `
+                   -PercentComplete $PercentComplete
+
+    # Wait 2 seconds before checking again
+    Start-Sleep -Seconds 2
+}
+
+# Clear the progress bar when done
+Write-Progress -Activity "Downloading Microsoft 365 Apps" -Completed
+
+# Check if the process exited cleanly
+if ($Process.ExitCode -eq 0) {
+    Write-Host "Download completed successfully! You can now run the installation script." -ForegroundColor Green
+} else {
+    Write-Host "Download failed with exit code: $($Process.ExitCode)" -ForegroundColor Red
+}

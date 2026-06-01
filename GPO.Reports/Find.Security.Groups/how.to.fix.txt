@@ -1,0 +1,5 @@
+# Dry run first — see what would be deleted with no changes
+pwsh -ExecutionPolicy Bypass -File "C:\Path\To\Remediate-LGPOExe.ps1" -WhatIfMode
+
+# Live run
+pwsh -ExecutionPolicy Bypass -File "C:\Path\To\Remediate-LGPOExe.ps1"

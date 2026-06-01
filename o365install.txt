@@ -1,0 +1,98 @@
+# Requires -RunAsAdministrator
+
+#================================================================================
+# 1. CONFIGURATION & LOGGING SETUP
+#================================================================================
+$ScriptDir = $PSScriptRoot
+$LogFile = Join-Path -Path $ScriptDir -ChildPath "o365_install_log.txt"
+
+# Function to write messages to both the console and the log file
+function Write-Log {
+    param(
+        [string]$Message,
+        [string]$Color = "White",
+        [ValidateSet("INFO", "WARN", "FAIL", "PASS")]
+        [string]$Severity = "INFO"
+    )
+    $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $LogMessage = "[$Timestamp] [$Severity] - $Message"
+    
+    Write-Host $LogMessage -ForegroundColor $Color
+    if ($LogFile) {
+        Add-Content -Path $LogFile -Value $LogMessage
+    }
+}
+
+New-Item -Path $LogFile -ItemType File -Force | Out-Null
+Write-Log -Message "M365 VDI Full Installation & Verification script started." -Color Cyan
+
+#================================================================================
+# 2. PRE-FLIGHT CHECKS FOR OFFLINE VDI INSTALL
+#================================================================================
+Write-Log -Message "Performing pre-flight checks..." -Color Yellow
+$ODTSetup = Join-Path $ScriptDir "setup.exe"
+$XMLConfig = Join-Path $ScriptDir "M365.xml"
+$OfficeSourcePath = Join-Path $ScriptDir "Office"
+
+if (-not (Test-Path $ODTSetup) -or -not (Test-Path $XMLConfig)) {
+    Write-Log -Message "FATAL: setup.exe or M365.xml not found. Aborting." -Color Red -Severity FAIL
+    exit 1
+}
+
+# CRITICAL: Check if the source files were downloaded. This prevents ErrorCode 2.
+if (-not (Test-Path $OfficeSourcePath)) {
+    Write-Log -Message "FATAL: 'Office' source folder is missing. You MUST run 'setup.exe /download M365.xml' first." -Color Red -Severity FAIL
+    exit 1
+}
+
+#================================================================================
+# 3. OFFLINE INSTALLATION
+#================================================================================
+Write-Log -Message "Starting Microsoft 365 Apps offline installation from local source." -Color Yellow
+$Process = Start-Process -FilePath $ODTSetup -ArgumentList "/configure `"$XMLConfig`"" -Wait -PassThru
+
+if ($Process.ExitCode -ne 0) {
+    Write-Log -Message "Office installation FAILED with a non-zero exit code: $($Process.ExitCode)." -Color Red -Severity FAIL
+    Write-Log -Message "Check logs in C:\Windows\Temp for details. Ensure downloaded files match the XML config." -Color Yellow -Severity WARN
+} else {
+    Write-Log -Message "Office installation process completed successfully with exit code 0." -Color Green -Severity PASS
+}
+
+#================================================================================
+# 4. FORCE & VERIFY VDI REGISTRY CONFIGURATION
+#================================================================================
+Write-Log -Message "`n--- Applying and Verifying VDI Registry Settings ---" -Color Cyan
+$ScaRegPath = "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration"
+
+try {
+    # Create the path if it doesn't exist
+    if (-not (Test-Path $ScaRegPath)) {
+        New-Item -Path $ScaRegPath -Force | Out-Null
+        Write-Log -Message "Created missing registry path: $ScaRegPath" -Color Gray
+    }
+    
+    # Force VDI registry keys to ensure they are set
+    Set-ItemProperty -Path $ScaRegPath -Name "SharedComputerLicensing" -Value 1 -Type DWord
+    Set-ItemProperty -Path $ScaRegPath -Name "SCLCacheOverride" -Value 1 -Type DWord
+    Write-Log -Message "Applied registry keys: SharedComputerLicensing=1, SCLCacheOverride=1." -Color Gray
+
+    # Verification
+    $ScaKey = Get-ItemProperty -Path $ScaRegPath -ErrorAction SilentlyContinue
+    if ($ScaKey.SharedComputerLicensing -eq 1) {
+        Write-Log -Message "[SUCCESS] 'SharedComputerLicensing' is correctly set to 1." -Color Green -Severity PASS
+    } else {
+        Write-Log -Message "[FAILURE] 'SharedComputerLicensing' is NOT set to 1." -Color Red -Severity FAIL
+    }
+
+    if ($ScaKey.SCLCacheOverride -eq 1) {
+        Write-Log -Message "[SUCCESS] 'SCLCacheOverride' is correctly set to 1." -Color Green -Severity PASS
+    } else {
+        Write-Log -Message "[FAILURE] 'SCLCacheOverride' is NOT set to 1." -Color Red -Severity FAIL
+    }
+}
+catch {
+    Write-Log -Message "Failed to set or verify registry keys: $($_.Exception.Message)" -Color Red -Severity FAIL
+}
+
+Write-Log -Message "`n--- Verification Complete ---" -Color Cyan
+

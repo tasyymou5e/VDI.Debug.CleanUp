@@ -1,0 +1,84 @@
+# 0. Force load system modules for compatibility
+Import-Module Appx -UseWindowsPowerShell -ErrorAction SilentlyContinue
+
+# Define output paths
+$OutputDir = "C:\Temp"
+if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
+
+$FindingsFile = "$OutputDir\PerUserSoftware_Findings.txt"
+$RemediationScript = "$OutputDir\Remove_PerUserSoftware.ps1"
+
+# Initialize files
+"--- PER-USER SOFTWARE FINDINGS (Golden Image 24H2) ---`nDate: $(Get-Date)`n" | Out-File $FindingsFile
+"# --- AUTOMATED REMEDIATION SCRIPT ---`n# Generated on: $(Get-Date)`n" | Out-File $RemediationScript
+
+Write-Host "Scanning system and generating scripts in $OutputDir..." -ForegroundColor Cyan
+
+# 1. SCAN REGISTRY (Standard MSI/EXE Apps)
+$PerUserRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
+$RegistryApps = Get-ItemProperty $PerUserRegistryPath -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName }
+
+"--- REGISTRY (HKCU) INSTALLATIONS ---" | Add-Content $FindingsFile
+if ($RegistryApps) {
+    foreach ($app in $RegistryApps) {
+        $Name = $app.DisplayName
+        $Uninstall = $app.QuietUninstallString ? $app.QuietUninstallString : $app.UninstallString
+        
+        # Write to findings
+        "Found: $Name `nUninstall String: $Uninstall`n" | Add-Content $FindingsFile
+        
+        # Write to remediation script
+        if ($Uninstall) {
+            "Write-Host 'Uninstalling: $Name'" | Add-Content $RemediationScript
+            "Start-Process cmd.exe -ArgumentList '/c $Uninstall' -Wait -NoNewWindow" | Add-Content $RemediationScript
+        }
+    }
+} else {
+    "No per-user registry applications detected.`n" | Add-Content $FindingsFile
+}
+
+# 2. SCAN APPX/MSIX PACKAGES (Modern Apps tied to SIDs)
+$PerUserAppx = Get-AppxPackage -AllUsers | Where-Object { 
+    $_.PackageUserInformation -match "S-1-5-21-" 
+} | Select-Object Name, PackageUserInformation, PackageFullName
+
+"--- APPX/MSIX PACKAGES (TIED TO USER SID) ---" | Add-Content $FindingsFile
+if ($PerUserAppx) {
+    foreach ($appx in $PerUserAppx) {
+        $AppName = $appx.Name
+        
+        # Write to findings
+        "Found Appx: $AppName `nUser Info: $($appx.PackageUserInformation)`n" | Add-Content $FindingsFile
+        
+        # Write to remediation script
+        "Write-Host 'Removing Appx: $AppName'" | Add-Content $RemediationScript
+        "Get-AppxPackage -Name '*$AppName*' -AllUsers | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue" | Add-Content $RemediationScript
+        "Get-AppxProvisionedPackage -Online | Where-Object { `$_.DisplayName -like '*$AppName*' } | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue" | Add-Content $RemediationScript
+    }
+} else {
+    "No per-user MSIX packages detected.`n" | Add-Content $FindingsFile
+}
+
+# 3. SCAN APPDATA FOLDERS (Local per-user binaries)
+$AppDataPrograms = "$env:LOCALAPPDATA\Programs"
+"--- LOCAL APPDATA (Programs Folder) ---" | Add-Content $FindingsFile
+if (Test-Path $AppDataPrograms) {
+    $Folders = Get-ChildItem -Path $AppDataPrograms -Directory
+    foreach ($folder in $Folders) {
+        $FolderName = $folder.Name
+        $FolderPath = $folder.FullName
+        
+        # Write to findings
+        "Found Local AppData Folder: $FolderPath" | Add-Content $FindingsFile
+        
+        # Write to remediation script (Warning: Deletes the folder)
+        "Write-Host 'Removing Local AppData directory: $FolderName'" | Add-Content $RemediationScript
+        "Remove-Item -Path '$FolderPath' -Recurse -Force -ErrorAction SilentlyContinue" | Add-Content $RemediationScript
+    }
+} else {
+    "No per-user AppData\Programs folders detected.`n" | Add-Content $FindingsFile
+}
+
+Write-Host "Scan Complete!" -ForegroundColor Green
+Write-Host "1. Review your findings here: $FindingsFile" -ForegroundColor Yellow
+Write-Host "2. Execute the uninstalls by running: $RemediationScript" -ForegroundColor Yellow

@@ -1,0 +1,171 @@
+# Requires -Version 7.0
+# Run as Administrator
+
+# ==========================================
+# 1. CONFIGURATION & VARIABLES
+# ==========================================
+$InstallerPath = "C:\Temp\App_Volumes_Agent.msi"
+$ManagerFQDN   = "YOUR-APPVOL-MANAGER.domain.com"  # Replace with your actual Manager FQDN
+$ManagerPort   = "443"
+
+$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { $PWD.Path }
+$LogFile   = Join-Path -Path $ScriptDir -ChildPath "techstack.altitude.log"
+
+# ==========================================
+# 2. LOGGING FUNCTION
+# ==========================================
+function Write-Log {
+    param (
+        [string]$Message,
+        [string]$Color = "White"
+    )
+    Write-Host $Message -ForegroundColor $Color
+    $CleanMessage = $Message -replace "\[\✓\]|\[X\]|\[\!\]", "" | Out-String
+    "$(Get-Date -Format 'HH:mm:ss') | $($CleanMessage.Trim())" | Out-File -FilePath $LogFile -Append
+}
+
+# Initialize Log Header for the session
+"==================================================" | Out-File -FilePath $LogFile -Append
+"SESSION START: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Out-File -FilePath $LogFile -Append
+"==================================================" | Out-File -FilePath $LogFile -Append
+
+# ==========================================
+# 3. ACTION FUNCTIONS
+# ==========================================
+
+function Get-DriverAltitude {
+    Write-Log "`n--- CHECKING FILTER DRIVER ALTITUDES ---" "Yellow"
+    Write-Log "Executing: fltmc filters | Select-String 'svdriver', 'fslx', 'vmm'" "Gray"
+
+    $Altitudes = fltmc filters | Select-String "svdriver", "fslx", "vmm"
+
+    if ($Altitudes) {
+        Write-Log "[✓] Found the following target filter drivers in the stack:" "Green"
+        foreach ($Line in $Altitudes) {
+            Write-Log "    $($Line.Line.Trim())" "Cyan"
+        }
+    } else {
+        Write-Log "[!] NOTE: None of the target drivers (svdriver, fslx, vmm) are currently loaded." "Yellow"
+        Write-Log "    If App Volumes was just installed, a reboot is required." "Gray"
+    }
+    Write-Log "--- ALTITUDE CHECK COMPLETE ---`n" "Yellow"
+}
+
+function Install-AppVolumesAgent {
+    Write-Log "`n--- OMNISSA APP VOLUMES AGENT INSTALLATION & SYNC ---" "Cyan"
+
+    # PRE-INSTALL: CHECK FOR INSTALLER
+    if (-not (Test-Path $InstallerPath)) {
+        Write-Log "[X] ERROR: Installer not found at $InstallerPath!" "Red"
+        return
+    }
+
+    # EXECUTE MACHINE-WIDE INSTALLATION
+    Write-Log "`n[1/5] Starting MSI Installation for All Users..." "Yellow"
+    $InstallerArgs = @(
+        "/i", "`"$InstallerPath`"",
+        "/qn",
+        "/norestart",
+        "ALLUSERS=1",
+        "MANAGER_ADDR=$ManagerFQDN",
+        "MANAGER_PORT=$ManagerPort"
+    )
+
+    $Process = Start-Process msiexec.exe -ArgumentList $InstallerArgs -Wait -PassThru
+
+    if ($Process.ExitCode -eq 0 -or $Process.ExitCode -eq 3010) {
+        $StatusMsg = if ($Process.ExitCode -eq 3010) { "SUCCESS (Restart Required)" } else { "SUCCESS" }
+        Write-Log "[✓] $StatusMsg - Exit Code: $($Process.ExitCode)" "Green"
+    } else {
+        Write-Log "[X] FAILED: Installation failed with exit code $($Process.ExitCode)." "Red"
+        return
+    }
+
+    # CONFIGURE HORIZON AGENT SYNC (WaitAppVolumes)
+    Write-Log "`n[2/5] Configuring Horizon Agent Synchronization..." "Yellow"
+    $HorizonRegPath = "HKLM:\SOFTWARE\VMware, Inc.\VMware VDM\Agent\Configuration"
+
+    if (-not (Test-Path $HorizonRegPath)) { 
+        Write-Log "    - Path not found. Creating Horizon Configuration Registry Path..." "Gray"
+        New-Item -Path $HorizonRegPath -Force -Recurse | Out-Null 
+    }
+
+    try {
+        New-ItemProperty -Path $HorizonRegPath -Name "WaitAppVolumes" -Value 1 -PropertyType DWORD -Force -ErrorAction Stop | Out-Null
+        Write-Log "[✓] SUCCESS: WaitAppVolumes set to 1. Horizon will now wait for AppStacks." "Green"
+    } catch {
+        Write-Log "[X] FAILED: Could not set WaitAppVolumes registry key." "Red"
+    }
+
+    # VERIFY MANAGER CONFIGURATION
+    Write-Log "`n[3/5] Verifying Manager Address in Registry..." "Yellow"
+    $AppVolRegPath = "HKLM:\System\CurrentControlSet\Services\svservice\Parameters"
+    $InstalledMgr = (Get-ItemProperty -Path $AppVolRegPath -ErrorAction SilentlyContinue).ManagerAddress
+
+    if ($InstalledMgr -eq $ManagerFQDN) {
+        Write-Log "[✓] SUCCESS: Registry ManagerAddress matches ($InstalledMgr)." "Green"
+    } else {
+        Write-Log "[!] WARNING: Registry shows '$InstalledMgr'." "Yellow"
+    }
+
+    # VERIFY AGENT SERVICE
+    Write-Log "`n[4/5] Verifying Agent Service Registration..." "Yellow"
+    $Service = Get-CimInstance -ClassName Win32_Service -Filter "Name = 'svservice'"
+    if ($Service) {
+        Write-Log "[✓] Found Service: $($Service.DisplayName) (State: $($Service.State))" "Green"
+    } else {
+        Write-Log "[X] FAILED: Service 'svservice' not found." "Red"
+    }
+
+    # CHECK DRIVERS & ALTITUDE
+    Write-Log "`n[5/5] Running Altitude & Driver Check..." "Yellow"
+    Get-DriverAltitude
+
+    Write-Log "--- INSTALLATION PHASE COMPLETE ---`n" "Cyan"
+}
+
+# ==========================================
+# 4. INTERACTIVE MENU LOOP
+# ==========================================
+$MenuRunning = $true
+
+while ($MenuRunning) {
+    Clear-Host
+    Write-Host "=================================================" -ForegroundColor Cyan
+    Write-Host "    OMNISSA HORIZON GOLDEN IMAGE UTILITY (24H2)  " -ForegroundColor White
+    Write-Host "=================================================" -ForegroundColor Cyan
+    Write-Host " 1. Install App Volumes Agent, Sync & Log Altitude" -ForegroundColor White
+    Write-Host " 2. Check Filter Driver Altitudes Only (Log findings)" -ForegroundColor White
+    Write-Host " Q. Quit / Exit" -ForegroundColor White
+    Write-Host "=================================================" -ForegroundColor Cyan
+    Write-Host "Log location: $LogFile" -ForegroundColor Gray
+    
+    $Choice = Read-Host "`nSelect an option [1, 2, or Q]"
+
+    switch ($Choice) {
+        '1' {
+            Clear-Host
+            Install-AppVolumesAgent
+            Write-Host "Press any key to return to the menu..." -ForegroundColor Gray
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        }
+        '2' {
+            Clear-Host
+            Get-DriverAltitude
+            Write-Host "Press any key to return to the menu..." -ForegroundColor Gray
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        }
+        'q' {
+            $MenuRunning = $false
+        }
+        'Q' {
+            $MenuRunning = $false
+        }
+        default {
+            Write-Host "Invalid selection. Please choose 1, 2, or Q." -ForegroundColor Red
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
+Write-Host "Exiting script. Final logs saved to: $LogFile" -ForegroundColor Cyan

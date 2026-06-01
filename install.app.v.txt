@@ -1,0 +1,72 @@
+# Requires -Version 7.0
+# Run as Administrator
+
+# 1. DEFINE CONFIGURATION
+$InstallerPath = "C:\Temp\App_Volumes_Agent.msi"
+$ManagerFQDN   = "YOUR-APPVOL-MANAGER.domain.com"  # Replace with your actual Manager FQDN
+$ManagerPort   = "443"
+
+Write-Host "--- OMNISSA APP VOLUMES AGENT INSTALLATION (PS7) ---" -ForegroundColor Cyan
+
+# 2. PRE-INSTALL: CHECK FOR INSTALLER
+if (-not (Test-Path $InstallerPath)) {
+    Write-Host "[X] ERROR: Installer not found at $InstallerPath!" -ForegroundColor Red
+    return
+}
+
+# 3. EXECUTE MACHINE-WIDE INSTALLATION
+Write-Host "[1/4] Starting MSI Installation for All Users..." -ForegroundColor Yellow
+
+# Parameters:
+# MANAGER_ADDR sets the App Volumes Manager for the agent
+# ALLUSERS=1 ensures it is a machine-wide install
+$InstallerArgs = @(
+    "/i", "`"$InstallerPath`"",
+    "/qn",
+    "/norestart",
+    "ALLUSERS=1",
+    "MANAGER_ADDR=$ManagerFQDN",
+    "MANAGER_PORT=$ManagerPort"
+)
+
+# Start-Process in PS7 correctly handles the argument list array
+$Process = Start-Process msiexec.exe -ArgumentList $InstallerArgs -Wait -PassThru
+
+# 4. VERIFY EXIT CODE
+if ($Process.ExitCode -eq 0 -or $Process.ExitCode -eq 3010) {
+    $StatusMsg = if ($Process.ExitCode -eq 3010) { "SUCCESS (Restart Required)" } else { "SUCCESS" }
+    Write-Host "[✓] $StatusMsg - Exit Code: $($Process.ExitCode)" -ForegroundColor Green
+} else {
+    Write-Host "[X] FAILED: Installation failed with exit code $($Process.ExitCode)." -ForegroundColor Red
+    return
+}
+
+# 5. POST-INSTALL: VERIFY REGISTRY CONFIGURATION
+Write-Host "`n[2/4] Verifying Manager Address in Registry..." -ForegroundColor Yellow
+$RegPath = "HKLM:\System\CurrentControlSet\Services\svservice\Parameters"
+$InstalledMgr = (Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue).ManagerAddress
+
+if ($InstalledMgr -eq $ManagerFQDN) {
+    Write-Host "[✓] SUCCESS: Registry ManagerAddress matches ($InstalledMgr)." -ForegroundColor Green
+} else {
+    Write-Host "[!] WARNING: Registry shows '$InstalledMgr'. MSI might not have applied the property." -ForegroundColor Yellow
+}
+
+# 6. POST-INSTALL: VERIFY SERVICE STATUS (CIM Method for PS7)
+Write-Host "`n[3/4] Verifying Agent Service Registration..." -ForegroundColor Yellow
+$Service = Get-CimInstance -ClassName Win32_Service -Filter "Name = 'svservice'"
+if ($Service) {
+    Write-Host "[✓] Found Service: $($Service.DisplayName) (State: $($Service.State))" -ForegroundColor Green
+} else {
+    Write-Host "[X] FAILED: Service 'svservice' not found." -ForegroundColor Red
+}
+
+# 7. POST-INSTALL: CHECK DRIVER ATTACHMENT
+Write-Host "`n[4/4] Checking Virtualization Filter Driver..." -ForegroundColor Yellow
+if (fltmc instances | Select-String "svdriver") {
+    Write-Host "[✓] Driver 'svdriver' is attached and active." -ForegroundColor Green
+} else {
+    Write-Host "[!] NOTE: 'svdriver' not detected. This is expected until the next reboot." -ForegroundColor Gray
+}
+
+Write-Host "`n--- INSTALLATION STEP COMPLETE ---" -ForegroundColor Cyan

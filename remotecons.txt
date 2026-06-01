@@ -1,0 +1,42 @@
+# Requires -Version 7.0
+# Run as Administrator
+
+# 1. CONFIGURATION
+$InstallerPath = "C:\Temp\VMware-VMRC-<version>.exe"
+$VMRCPath = "C:\Program Files (x86)\VMware\VMware Remote Console\vmrc.exe"
+
+Write-Host "--- VMWARE REMOTE CONSOLE (VMRC) INSTALLATION ---" -ForegroundColor Cyan
+
+# 2. PRE-INSTALL CHECKS
+if (-not (Test-Path $InstallerPath)) {
+    Write-Host "[X] ERROR: Installer not found at $InstallerPath!" -ForegroundColor Red
+    return
+}
+
+# 3. EXECUTION VIA CMD (To fix InstallShield Quote Parsing)
+Write-Host "[1/2] Executing Silent Installation for All Users..." -ForegroundColor Yellow
+
+# The critical fix: We use cmd.exe /c to launch the installer.
+# This prevents PowerShell from altering the quotes required by the /v switch.
+$CmdArgs = "/c `"$InstallerPath`" /s /v`"/qn ALLUSERS=1 EULAS_AGREED=1 AUTOSOFTWAREUPDATE=0 /norestart`""
+
+Write-Host "      Calling CMD: $CmdArgs" -ForegroundColor Gray
+$Process = Start-Process -FilePath "cmd.exe" -ArgumentList $CmdArgs -Wait -PassThru
+
+# 4. WAIT FOR BACKGROUND MSI
+Write-Host "      Waiting for Windows Installer (msiexec) to finish..." -ForegroundColor Gray
+while (Get-Process -Name "msiexec" -ErrorAction SilentlyContinue | Where-Object {$_.Path -match "syswow64"}) {
+    Start-Sleep -Seconds 3
+}
+
+# 5. VERIFICATION
+Write-Host "`n[2/2] Verifying Application Files..." -ForegroundColor Yellow
+if (Test-Path $VMRCPath) {
+    $Version = (Get-Item $VMRCPath).VersionInfo.ProductVersion
+    Write-Host "[✓] SUCCESS: VMRC Version $Version installed successfully!" -ForegroundColor Green
+} else {
+    Write-Host "[X] FAILED: Files were not written to $VMRCPath." -ForegroundColor Red
+    Write-Host "    * Ensure Visual C++ 2015-2022 (x86 & x64) is installed." -ForegroundColor Yellow
+}
+
+Write-Host "`n--- VMRC MISSION COMPLETE ---" -ForegroundColor Cyan

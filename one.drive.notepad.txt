@@ -1,0 +1,79 @@
+winget uninstall --id "MSIX\NotepadPlusPlus_1.0.0.0_neutral__2247w0b46hfww" --silent --purge --force
+
+
+
+winget uninstall --id "MSIX\Microsoft.OneDriveSync_26063.405.2.0_neutral__8wekyb3d8bbwe" --silent --purge --force
+
+
+winget uninstall --id "ARP\Machine\X86\{10C71873-AA81-4EDD-89F9-783E2D6CDB41}" --silent --force
+
+
+# Check for the service
+Get-Service -Name "svservice" -ErrorAction SilentlyContinue
+
+# Check for the driver
+Get-Service -Name "svdriver" -ErrorAction SilentlyContinue
+
+
+Install:
+
+winget install --id "VMware.AppVolumesAgent" --source winget --custom "ALLUSERS=1" --location "C:\Temp\AppVolumesAgent.msi" --silent
+
+
+Start-Process msiexec.exe -ArgumentList '/i "C:\Temp\AppVolumesAgent.msi" /qn /norestart ALLUSERS=1 MANAGER_ADDR=YOUR_MANAGER_FQDN MANAGER_PORT=443' -Wait
+
+
+do not reboot;
+Check:
+
+Get-Service svservice | Select-Object Name, Status, StartType
+
+
+# 1. DEFINE VARIABLES
+$ManagerFQDN = "YOUR_MANAGER_FQDN"
+$ManagerPort = 443
+
+Write-Host "--- MISSION VERIFICATION: APP VOLUMES CONNECTIVITY ---" -ForegroundColor Yellow
+
+# 2. NETWORK PERSISTENCE CHECK (TCP 443)
+Write-Host "[1/4] Checking Network Line of Sight to Manager..." -ForegroundColor Cyan
+$TestNet = Test-NetConnection -ComputerName $ManagerFQDN -Port $ManagerPort
+if ($TestNet.TcpTestSucceeded) {
+    Write-Host "[✓] SUCCESS: Port $ManagerPort is open on $ManagerFQDN." -ForegroundColor Green
+} else {
+    Write-Host "[X] FAILED: Cannot reach Manager on $ManagerPort. Check Firewall/NSGs." -ForegroundColor Red
+}
+
+# 3. SERVICE STATUS CHECK
+Write-Host "`n[2/4] Checking App Volumes Services..." -ForegroundColor Cyan
+$SvService = Get-Service -Name "svservice" -ErrorAction SilentlyContinue
+if ($SvService.Status -eq "Running") {
+    Write-Host "[✓] SUCCESS: 'svservice' is Running." -ForegroundColor Green
+} else {
+    Write-Host "[X] FAILED: 'svservice' is NOT Running." -ForegroundColor Red
+}
+
+# 4. REGISTRY CONFIGURATION CHECK
+Write-Host "`n[3/4] Checking Registry Parameters..." -ForegroundColor Cyan
+$RegPath = "HKLM:\System\CurrentControlSet\Services\svservice\Parameters"
+$CurrentMgr = (Get-ItemProperty -Path $RegPath -ErrorAction SilentlyContinue).ManagerAddress
+
+if ($CurrentMgr -eq $ManagerFQDN) {
+    Write-Host "[✓] SUCCESS: Registry ManagerAddress matches ($CurrentMgr)." -ForegroundColor Green
+} else {
+    Write-Host "[X] WARNING: Registry shows '$CurrentMgr' instead of '$ManagerFQDN'." -ForegroundColor Yellow
+}
+
+# 5. DRIVER STATUS CHECK (Filter Driver)
+Write-Host "`n[4/4] Checking App Volumes Filter Driver (svdriver)..." -ForegroundColor Cyan
+$SvDriver = fltmc instances | Select-String "svdriver"
+if ($SvDriver) {
+    Write-Host "[✓] SUCCESS: 'svdriver' is attached and active." -ForegroundColor Green
+} else {
+    Write-Host "[X] FAILED: 'svdriver' is NOT detected in the filter stack. Reboot may be required." -ForegroundColor Red
+}
+
+
+
+
+

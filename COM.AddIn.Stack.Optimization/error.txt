@@ -1,0 +1,55 @@
+PS C:\Windows\System32> cd "C:\ImagePrep\VDI.Install.Stack\COM.AddIn.Stack.Optomization"
+PS C:\ImagePrep\VDI.Install.Stack\COM.AddIn.Stack.Optomization> ls
+
+    Directory: C:\ImagePrep\VDI.Install.Stack\COM.AddIn.Stack.Optomization
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---           5/11/2026  2:39 PM           4733 Boot.info.ps1
+-a---           5/11/2026 10:41 AM           5559 check.COM.stack.ps1
+-a---           5/11/2026 12:23 PM           1365 COM_Add-in_Audit.log
+-a---           5/11/2026  2:34 PM           5198 COM.LoadBehavior.ps1
+-a---           5/11/2026  2:36 PM           1705 COMLoadFindings.log
+
+PS C:\ImagePrep\VDI.Install.Stack\COM.AddIn.Stack.Optomization> ls
+
+    Directory: C:\ImagePrep\VDI.Install.Stack\COM.AddIn.Stack.Optomization
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a---           5/11/2026  2:39 PM           4733 Boot.info.ps1
+-a---           5/11/2026 10:41 AM           5559 check.COM.stack.ps1
+-a---           5/11/2026 12:23 PM           1365 COM_Add-in_Audit.log
+-a---           5/11/2026  2:34 PM           5198 COM.LoadBehavior.ps1
+-a---           5/11/2026  2:36 PM           1705 COMLoadFindings.log
+
+PS C:\ImagePrep\VDI.Install.Stack\COM.AddIn.Stack.Optomization> .\Boot.info.ps1
+--- VDI BOOT PROCESS CAPTURE DEPLOYMENT ---
+
+[1/2] Creating boot capture payload script at C:\Temp\VDI_Diagnostics\CaptureBoot.ps1...
+  [✓] Payload script created successfully.
+
+[2/2] Registering payload to run at System Boot...
+New-ScheduledTaskAction: C:\ImagePrep\VDI.Install.Stack\COM.AddIn.Stack.Optomization\Boot.info.ps1:68
+Line |
+  68 |  $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument …
+     |            ~~~~~~~~~~~~~~~~~~~~~~~
+     | The term 'New-ScheduledTaskAction' is not recognized as a name of a cmdlet, function, script file, or executable
+     | program. Check the spelling of the name, or if a path was included, verify that the path is correct and try
+     | again.
+New-ScheduledTaskTrigger: C:\ImagePrep\VDI.Install.Stack\COM.AddIn.Stack.Optomization\Boot.info.ps1:71
+Line |
+  71 |  $Trigger = New-ScheduledTaskTrigger -AtStartup
+     |             ~~~~~~~~~~~~~~~~~~~~~~~~
+     | The term 'New-ScheduledTaskTrigger' is not recognized as a name of a cmdlet, function, script file, or
+     | executable program. Check the spelling of the name, or if a path was included, verify that the path is correct
+     | and try again.
+New-ScheduledTaskPrincipal: C:\ImagePrep\VDI.Install.Stack\COM.AddIn.Stack.Optomization\Boot.info.ps1:74
+Line |
+  74 |  $Principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" …
+     |               ~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | The term 'New-ScheduledTaskPrincipal' is not recognized as a name of a cmdlet, function, script file, or
+     | executable program. Check the spelling of the name, or if a path was included, verify that the path is correct
+     | and try again.
+  [X] FAILED to register scheduled task: The term 'Register-ScheduledTask' is not recognized as a name of a cmdlet, function, script file, or executable program.
+Check the spelling of the name, or if a path was included, verify that the path is correct and try again.

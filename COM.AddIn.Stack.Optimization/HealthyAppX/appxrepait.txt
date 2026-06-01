@@ -1,0 +1,77 @@
+# Requires -Version 5.1
+# Run as Administrator
+
+Write-Host "--- APPX MODULE & DLL SURGERY ---" -ForegroundColor Cyan
+
+$SourceFolder = "C:\ImagePrep\HealthyAppx" # CHANGE THIS to where you put the healthy files
+$DestFolder = "C:\Windows\System32\WindowsPowerShell\v1.0\Modules\Appx"
+
+if (-not (Test-Path $SourceFolder)) {
+    Write-Host "[X] ERROR: Source folder '$SourceFolder' not found." -ForegroundColor Red
+    exit
+}
+
+# ==========================================
+# 1. STOP CONFLICTING SERVICES
+# ==========================================
+Write-Host "`n[1/4] Stopping AppX services to release file locks..." -ForegroundColor Yellow
+Stop-Service -Name "AppXSvc" -Force -ErrorAction SilentlyContinue
+Stop-Service -Name "ClipSVC" -Force -ErrorAction SilentlyContinue
+
+# ==========================================
+# 2. INJECT AND UNBLOCK POWERSHELL FILES
+# ==========================================
+Write-Host "`n[2/4] Copying and Unblocking PowerShell files..." -ForegroundColor Yellow
+try {
+    # Force copy the healthy files over the broken directory
+    Copy-Item -Path "$SourceFolder\*" -Destination $DestFolder -Recurse -Force -ErrorAction Stop
+    
+    # CRITICAL: Remove the "Mark of the Web" so Windows doesn't block the copied binaries
+    Get-ChildItem -Path $DestFolder -Recurse | Unblock-File -ErrorAction SilentlyContinue
+    Write-Host "  [✓] Files copied and unblocked successfully." -ForegroundColor Green
+} catch {
+    Write-Host "  [X] FAILED to copy files: $($_.Exception.Message)" -ForegroundColor Red
+    exit
+}
+
+# ==========================================
+# 3. RE-REGISTER OS-LEVEL COM DLLs
+# ==========================================
+Write-Host "`n[3/4] Re-registering core Windows AppX COM DLLs..." -ForegroundColor Yellow
+# These are the actual engines the PowerShell module talks to.
+$CoreDlls = @(
+    "C:\Windows\System32\AppxDeploymentClient.dll",
+    "C:\Windows\System32\AppxPackaging.dll",
+    "C:\Windows\System32\AppXDeploymentExtensions.OneCore.dll"
+)
+
+foreach ($Dll in $CoreDlls) {
+    if (Test-Path $Dll) {
+        # regsvr32 /s runs it silently
+        $Process = Start-Process "regsvr32.exe" -ArgumentList "/s `"$Dll`"" -Wait -PassThru
+        if ($Process.ExitCode -eq 0) {
+            Write-Host "  [✓] Registered: $(Split-Path $Dll -Leaf)" -ForegroundColor Green
+        } else {
+            Write-Host "  [!] Failed to register: $(Split-Path $Dll -Leaf) (Exit Code: $($Process.ExitCode))" -ForegroundColor DarkYellow
+        }
+    } else {
+        Write-Host "  [X] Missing OS component: $Dll" -ForegroundColor Red
+    }
+}
+
+# ==========================================
+# 4. START SERVICES AND IMPORT MODULE
+# ==========================================
+Write-Host "`n[4/4] Restarting services and importing module..." -ForegroundColor Yellow
+Start-Service -Name "AppXSvc" -ErrorAction SilentlyContinue
+
+# Clear the PowerShell module cache and forcefully import
+Remove-Module Appx -Force -ErrorAction SilentlyContinue
+Import-Module Appx -Force -ErrorAction SilentlyContinue
+
+if (Get-Command -Name "Get-AppxPackage" -ErrorAction SilentlyContinue) {
+    Write-Host "`n  [✓] SUCCESS: 'Get-AppxPackage' cmdlet is alive and loaded!" -ForegroundColor Green
+    Write-Host "      You can now attempt to run your Edge MSI Repair Script again." -ForegroundColor Cyan
+} else {
+    Write-Host "`n  [X] FAILED: Module injected, but Windows still refuses to load it. The OS component store is too severely damaged." -ForegroundColor Red
+}

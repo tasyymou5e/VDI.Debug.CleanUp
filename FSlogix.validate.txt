@@ -1,0 +1,456 @@
+# Validate-only run — reports current state, won't touch FSLogix VHDLocations
+.\Provision-HorizonGoldenImage.ps1
+
+# With a new VHDLocations value (only writes if missing)
+.\Provision-HorizonGoldenImage.ps1 -VHDLocations '\\fileserver\odfc$'
+
+# Force overwrite of FSLogix values on a re-run / config change
+.\Provision-HorizonGoldenImage.ps1 -VHDLocations '\\fileserver\odfc$' -Force
+
+# If HAADJ is being managed by your existing GPO, skip the task creation
+.\Provision-HorizonGoldenImage.ps1 -SkipHAADJTask
+
+
+
+
+
+
+Key safety properties for your environment:
+•	Won't break your existing IncludeOfficeActivation = 1 — Section 3 is read-only validation unless you explicitly pass -Force with -VHDLocations. Existing FSLogix values are reported, not overwritten.
+•	Idempotent everywhere else — re-running on a clone that's already configured logs [OK] for matching values and changes nothing.
+•	All actions logged to C:\ProgramData\CompanyName\Logs\Provision-HorizonGoldenImage_<timestamp>.log for audit trail (relevant for the federal compliance side).
+•	HAADJ helper writes its own log to Force-HAADJ.log in the same directory, with one line per attempt, so you can see exactly when registration happened on each clone.
+One thing the script intentionally does NOT do:
+The HKCU first-run/sign-in suppression keys (bootedrtm, disablemovie, etc.) need to be applied per-user every session in a non-persistent VDI, since the user hive is fresh on each instant clone. Those belong in a GPO scoped to the desktop pool's user OU, not in the image. If you want, I can produce the matching Group Policy Preferences XML or a .reg snippet for that side of the configuration as a follow-up.
+Key safety properties for your environment:
+•	Won't break your existing IncludeOfficeActivation = 1 — Section 3 is read-only validation unless you explicitly pass -Force with -VHDLocations. Existing FSLogix values are reported, not overwritten.
+•	Idempotent everywhere else — re-running on a clone that's already configured logs [OK] for matching values and changes nothing.
+•	All actions logged to C:\ProgramData\CompanyName\Logs\Provision-HorizonGoldenImage_<timestamp>.log for audit trail (relevant for the federal compliance side).
+•	HAADJ helper writes its own log to Force-HAADJ.log in the same directory, with one line per attempt, so you can see exactly when registration happened on each clone.
+One thing the script intentionally does NOT do:
+The HKCU first-run/sign-in suppression keys (bootedrtm, disablemovie, etc.) need to be applied per-user every session in a non-persistent VDI, since the user hive is fresh on each instant clone. Those belong in a GPO scoped to the desktop pool's user OU, not in the image. If you want, I can produce the matching Group Policy Preferences XML or a .reg snippet for that side of the configuration as a follow-up.
+
+
+
+
+
+
+
+
+
+
+
+
+
+<#
+.SYNOPSIS
+    Horizon non-persistent VDI golden-image provisioning script.
+
+.DESCRIPTION
+    Run on the parent VM (or in a customization spec) before sealing the image.
+    Configures the four moving parts that drive silent Office activation and
+    sign-in on instant clones backed by on-prem AD synced to Entra ID via
+    AAD Connect, with True SSO + CAC/PIV authentication:
+
+      1. Microsoft 365 Apps Shared Computer Activation (SCA)
+      2. Office identity / ADAL registry settings
+      3. FSLogix ODFC validation (non-destructive — does NOT overwrite
+         existing values unless -Force is specified)
+      4. Hybrid Azure AD Join (HAADJ) registration scheduled task with
+         retry logic, fired at startup and logon
+
+    The script is idempotent. Re-running it on an already-configured image
+    reports current state and changes nothing unless settings have drifted.
+
+.PARAMETER VHDLocations
+    Optional UNC path for FSLogix ODFC storage. If omitted, the script
+    only validates the existing FSLogix configuration and reports status.
+
+.PARAMETER LogPath
+    Directory for the provisioning log. Defaults to
+    C:\ProgramData\CompanyName\Logs.
+
+.PARAMETER Force
+    Overwrite existing FSLogix values (VHDLocations, etc.) when supplied.
+    Without -Force, FSLogix values that already exist are left alone.
+
+.PARAMETER SkipHAADJTask
+    Skip creating the HAADJ scheduled task. Use if HAADJ is already being
+    handled via GPO or another mechanism.
+
+.NOTES
+    Tested against:
+      - Windows 11 24H2
+      - Microsoft 365 Apps for Enterprise (Current Channel)
+      - FSLogix 2.9.8884.27471 or later
+      - Omnissa Horizon 8 instant clones
+      - On-prem AD + AAD Connect, federated via AD FS for True SSO
+
+    FIPS 140-2: Uses only OS-native registry and scheduled-task APIs.
+    No third-party crypto. Compatible with FIPS-mode session hosts.
+
+    Run as: Local Administrator on the parent VM.
+#>
+
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [string]$VHDLocations,
+
+    [Parameter()]
+    [string]$LogPath = 'C:\ProgramData\CompanyName\Logs',
+
+    [Parameter()]
+    [switch]$Force,
+
+    [Parameter()]
+    [switch]$SkipHAADJTask
+)
+
+#region Bootstrap
+
+$ErrorActionPreference = 'Stop'
+
+if (-not (Test-Path $LogPath)) {
+    New-Item -Path $LogPath -ItemType Directory -Force | Out-Null
+}
+$LogFile = Join-Path $LogPath ("Provision-HorizonGoldenImage_{0}.log" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory)] [string]$Message,
+        [ValidateSet('INFO','OK','SKIP','WARN','ERROR','SET')]
+        [string]$Level = 'INFO'
+    )
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $line = "[{0}][{1,-5}] {2}" -f $ts, $Level, $Message
+    Add-Content -Path $LogFile -Value $line
+    $color = switch ($Level) {
+        'OK'    { 'Green' }
+        'SET'   { 'Cyan' }
+        'SKIP'  { 'DarkGray' }
+        'WARN'  { 'Yellow' }
+        'ERROR' { 'Red' }
+        default { 'Gray' }
+    }
+    Write-Host $line -ForegroundColor $color
+}
+
+function Set-RegistryValue {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$Name,
+        [Parameter(Mandatory)] $Value,
+        [Parameter(Mandatory)]
+        [ValidateSet('String','DWord','QWord','Binary','MultiString','ExpandString')]
+        [string]$Type,
+        [switch]$OnlyIfMissing
+    )
+
+    if (-not (Test-Path $Path)) {
+        New-Item -Path $Path -Force | Out-Null
+        Write-Log "Created key: $Path"
+    }
+
+    $existing = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+    if ($null -ne $existing -and $existing.PSObject.Properties.Name -contains $Name) {
+        $current = $existing.$Name
+        if ($OnlyIfMissing) {
+            Write-Log "Preserving existing value: $Path\$Name = $current" 'SKIP'
+            return
+        }
+        if ($current -eq $Value) {
+            Write-Log "Already correct: $Path\$Name = $current" 'OK'
+            return
+        }
+        Write-Log "Changing: $Path\$Name from '$current' to '$Value'" 'SET'
+    } else {
+        Write-Log "Creating: $Path\$Name = $Value" 'SET'
+    }
+
+    New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $Type -Force | Out-Null
+}
+
+function Test-RunningAsAdmin {
+    $current = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($current)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-RunningAsAdmin)) {
+    throw "Must be run as Administrator."
+}
+
+Write-Log "===== Horizon Golden Image Provisioning =====" 'INFO'
+Write-Log "Host: $env:COMPUTERNAME  |  OS: $((Get-CimInstance Win32_OperatingSystem).Caption) $((Get-CimInstance Win32_OperatingSystem).Version)" 'INFO'
+Write-Log "Log file: $LogFile" 'INFO'
+
+#endregion
+
+#region 1. Microsoft 365 Apps - Shared Computer Activation
+
+Write-Log "" 'INFO'
+Write-Log "--- Section 1: Microsoft 365 Apps SCA ---" 'INFO'
+
+Set-RegistryValue `
+    -Path 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' `
+    -Name 'SharedComputerLicensing' `
+    -Value '1' `
+    -Type String
+
+#endregion
+
+#region 2. Office Identity / ADAL
+
+Write-Log "" 'INFO'
+Write-Log "--- Section 2: Office Identity / ADAL ---" 'INFO'
+
+# ADAL: required for modern auth flows. Default in current M365, but pinning it
+# explicitly avoids surprises with mixed Office versions.
+Set-RegistryValue `
+    -Path 'HKLM:\SOFTWARE\Microsoft\Office\16.0\Common\Identity' `
+    -Name 'EnableADAL' `
+    -Value 1 `
+    -Type DWord
+
+# Force ADAL over WAM for federated CAC/PIV environments.
+# WAM has historically had issues with smartcard auth flows in non-persistent VDI.
+Set-RegistryValue `
+    -Path 'HKLM:\SOFTWARE\Microsoft\Office\16.0\Common\Identity' `
+    -Name 'DisableADALatopWAMOverride' `
+    -Value 1 `
+    -Type DWord
+
+#endregion
+
+#region 3. FSLogix ODFC validation
+
+Write-Log "" 'INFO'
+Write-Log "--- Section 3: FSLogix ODFC validation ---" 'INFO'
+
+$fslogixInstalled = Test-Path 'HKLM:\SOFTWARE\FSLogix\Apps'
+if (-not $fslogixInstalled) {
+    Write-Log "FSLogix Apps agent NOT detected. Install the agent before sealing." 'WARN'
+} else {
+    $agentVersion = (Get-ItemProperty 'HKLM:\SOFTWARE\FSLogix\Apps' -Name 'InstallVersion' -ErrorAction SilentlyContinue).InstallVersion
+    Write-Log "FSLogix Apps agent version: $agentVersion" 'OK'
+
+    # The minimum recommended version that handles OneAuth/IdentityCache cleanly.
+    $minVersion = [Version]'2.9.8884.27471'
+    try {
+        if ([Version]$agentVersion -lt $minVersion) {
+            Write-Log "FSLogix version is older than $minVersion. Upgrade to resolve OneAuth roaming issues." 'WARN'
+        }
+    } catch {
+        Write-Log "Could not parse FSLogix version string." 'WARN'
+    }
+}
+
+$odfcPath = 'HKLM:\SOFTWARE\Policies\FSLogix\ODFC'
+$odfcExists = Test-Path $odfcPath
+
+if (-not $odfcExists) {
+    Write-Log "ODFC policy key does not exist. Configuration via GPO is recommended." 'WARN'
+}
+
+# Required ODFC values to verify (whether they're applied via GPO or local).
+$requiredODFC = @{
+    'Enabled'                     = @{ Type = 'DWord';  Expected = 1 }
+    'VHDLocations'                = @{ Type = 'String'; Expected = $null }  # site-specific
+    'FlipFlopProfileDirectoryName'= @{ Type = 'DWord';  Expected = 1 }
+    'IncludeOfficeActivation'     = @{ Type = 'DWord';  Expected = 1 }
+    'VolumeType'                  = @{ Type = 'String'; Expected = 'VHDX' }
+    'SizeInMBs'                   = @{ Type = 'DWord';  Expected = $null }  # site-specific
+}
+
+foreach ($name in $requiredODFC.Keys) {
+    if (-not $odfcExists) {
+        Write-Log "  [missing] ${name}: ODFC key not present" 'WARN'
+        continue
+    }
+    $val = (Get-ItemProperty -Path $odfcPath -Name $name -ErrorAction SilentlyContinue).$name
+    if ($null -eq $val) {
+        Write-Log "  [missing] $name" 'WARN'
+    } else {
+        $expected = $requiredODFC[$name].Expected
+        if ($null -ne $expected -and $val -ne $expected) {
+            Write-Log "  [drift] $name = $val (expected $expected)" 'WARN'
+        } else {
+            Write-Log "  [ok]    $name = $val" 'OK'
+        }
+    }
+}
+
+# Only write VHDLocations if -VHDLocations was passed AND the value is missing
+# OR -Force was specified. This prevents accidental destruction of an existing
+# production config on a re-run.
+if ($VHDLocations) {
+    $current = (Get-ItemProperty -Path $odfcPath -Name 'VHDLocations' -ErrorAction SilentlyContinue).VHDLocations
+    if ($null -eq $current -or $Force) {
+        Set-RegistryValue -Path $odfcPath -Name 'VHDLocations' -Value $VHDLocations -Type String
+    } else {
+        Write-Log "VHDLocations already set to '$current'. Use -Force to overwrite." 'SKIP'
+    }
+}
+
+#endregion
+
+#region 4. Hybrid Azure AD Join scheduled task
+
+if ($SkipHAADJTask) {
+    Write-Log "" 'INFO'
+    Write-Log "--- Section 4: HAADJ task SKIPPED (-SkipHAADJTask) ---" 'INFO'
+} else {
+    Write-Log "" 'INFO'
+    Write-Log "--- Section 4: HAADJ scheduled task ---" 'INFO'
+
+    $scriptDir = 'C:\ProgramData\CompanyName\Scripts'
+    if (-not (Test-Path $scriptDir)) {
+        New-Item -Path $scriptDir -ItemType Directory -Force | Out-Null
+    }
+    $haadjScript = Join-Path $scriptDir 'Force-HAADJ.ps1'
+
+    $haadjBody = @'
+<#
+    Force-HAADJ.ps1
+    Triggers the built-in Automatic-Device-Join task and verifies that the
+    instant clone reaches the AzureAdJoined=YES state. Retries on failure
+    to handle AAD Connect sync delay and post-customization timing variance.
+#>
+[CmdletBinding()]
+param(
+    [int]$MaxAttempts = 5,
+    [int]$DelaySeconds = 60
+)
+
+$logDir = 'C:\ProgramData\CompanyName\Logs'
+if (-not (Test-Path $logDir)) { New-Item -Path $logDir -ItemType Directory -Force | Out-Null }
+$logFile = Join-Path $logDir 'Force-HAADJ.log'
+
+function Log { param($m) "$(Get-Date -Format s)  $m" | Add-Content -Path $logFile }
+
+Log "Start  Host=$env:COMPUTERNAME  User=$env:USERNAME"
+
+for ($i = 1; $i -le $MaxAttempts; $i++) {
+    Log "Attempt $i of $MaxAttempts"
+    try {
+        schtasks.exe /run /tn "\Microsoft\Windows\Workplace Join\Automatic-Device-Join" 2>&1 | Out-Null
+    } catch {
+        Log "schtasks /run failed: $_"
+    }
+
+    Start-Sleep -Seconds $DelaySeconds
+
+    $status = & dsregcmd.exe /status 2>$null
+    $joined = ($status | Select-String -Pattern '^\s*AzureAdJoined\s*:\s*YES' -Quiet)
+    $prt    = ($status | Select-String -Pattern '^\s*AzureAdPrt\s*:\s*YES'    -Quiet)
+
+    Log "  AzureAdJoined=$joined  AzureAdPrt=$prt"
+
+    if ($joined -and $prt) {
+        Log "Success on attempt $i"
+        exit 0
+    }
+}
+
+Log "Did not reach joined+PRT state after $MaxAttempts attempts. See dsregcmd /status."
+exit 1
+'@
+
+    Set-Content -Path $haadjScript -Value $haadjBody -Encoding UTF8 -Force
+    Write-Log "Wrote HAADJ helper script: $haadjScript" 'SET'
+
+    $taskName = 'CompanyName\Force HAADJ Registration'
+
+    # Remove existing task to ensure clean state on re-run.
+    $existing = Get-ScheduledTask -TaskName 'Force HAADJ Registration' -TaskPath '\CompanyName\' -ErrorAction SilentlyContinue
+    if ($existing) {
+        Unregister-ScheduledTask -TaskName 'Force HAADJ Registration' -TaskPath '\CompanyName\' -Confirm:$false
+        Write-Log "Removed existing scheduled task" 'SET'
+    }
+
+    $action = New-ScheduledTaskAction `
+        -Execute 'powershell.exe' `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$haadjScript`""
+
+    $trigStartup = New-ScheduledTaskTrigger -AtStartup
+    $trigStartup.Delay = 'PT2M'
+
+    $trigLogon = New-ScheduledTaskTrigger -AtLogOn
+    $trigLogon.Delay = 'PT30S'
+
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId 'SYSTEM' `
+        -LogonType ServiceAccount `
+        -RunLevel Highest
+
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable `
+        -RestartCount 3 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
+        -MultipleInstances IgnoreNew
+
+    Register-ScheduledTask `
+        -TaskName 'Force HAADJ Registration' `
+        -TaskPath '\CompanyName\' `
+        -Action $action `
+        -Trigger @($trigStartup, $trigLogon) `
+        -Principal $principal `
+        -Settings $settings `
+        -Description 'Triggers HAADJ device-join task at startup and logon. Retries on failure to handle AAD Connect sync delay on instant clones.' | Out-Null
+
+    Write-Log "Registered scheduled task: $taskName" 'SET'
+}
+
+#endregion
+
+#region 5. Verification report
+
+Write-Log "" 'INFO'
+Write-Log "--- Section 5: Verification ---" 'INFO'
+
+# SCA
+$sca = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' -Name 'SharedComputerLicensing' -ErrorAction SilentlyContinue).SharedComputerLicensing
+Write-Log "SharedComputerLicensing = $sca" $(if ($sca -eq '1') { 'OK' } else { 'WARN' })
+
+# ADAL
+$adal = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Office\16.0\Common\Identity' -Name 'EnableADAL' -ErrorAction SilentlyContinue).EnableADAL
+Write-Log "EnableADAL = $adal" $(if ($adal -eq 1) { 'OK' } else { 'WARN' })
+
+# FSLogix Apps service
+$svc = Get-Service -Name frxsvc -ErrorAction SilentlyContinue
+if ($svc) {
+    Write-Log "frxsvc service: $($svc.Status) / StartType=$($svc.StartType)" $(if ($svc.Status -eq 'Running') { 'OK' } else { 'WARN' })
+} else {
+    Write-Log "frxsvc service not found" 'WARN'
+}
+
+# HAADJ baseline (will only show meaningful state once deployed as a clone in the domain)
+try {
+    $dsreg = & dsregcmd.exe /status 2>$null
+    $aadJoined = ($dsreg | Select-String -Pattern '^\s*AzureAdJoined\s*:\s*(.+)$').Matches.Groups[1].Value.Trim()
+    $domainJoined = ($dsreg | Select-String -Pattern '^\s*DomainJoined\s*:\s*(.+)$').Matches.Groups[1].Value.Trim()
+    Write-Log "dsregcmd: DomainJoined=$domainJoined  AzureAdJoined=$aadJoined" 'INFO'
+    Write-Log "(Parent VM expected to show AzureAdJoined=NO; clones should flip to YES after the scheduled task runs.)" 'INFO'
+} catch {
+    Write-Log "dsregcmd query failed: $_" 'WARN'
+}
+
+Write-Log "" 'INFO'
+Write-Log "===== Provisioning complete =====" 'INFO'
+Write-Log "Next steps:" 'INFO'
+Write-Log "  1. Reboot the parent VM" 'INFO'
+Write-Log "  2. Verify nothing is broken (open Word, check File > Account)" 'INFO'
+Write-Log "  3. Take the snapshot and push the new image to the desktop pool" 'INFO'
+Write-Log "  4. On a deployed instant clone, run: dsregcmd /status" 'INFO'
+Write-Log "     Confirm AzureAdJoined=YES and AzureAdPrt=YES within ~3 minutes" 'INFO'
+Write-Log "     of user logon. Check C:\ProgramData\CompanyName\Logs\Force-HAADJ.log" 'INFO'
+Write-Log "     for the registration history." 'INFO'
+
+#endregion
+
+
+

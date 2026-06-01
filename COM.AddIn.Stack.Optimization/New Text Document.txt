@@ -1,0 +1,24 @@
+# 1. Create a temporary mount directory
+New-Item -ItemType Directory -Force -Path "C:\Mount"
+
+# 2. Get the index of the OS edition you are using (e.g., Windows 11 Pro or Enterprise)
+# Note the Index number from the output of this command:
+Get-WindowsImage -ImagePath "D:\sources\install.wim" 
+
+# 3. Mount the WIM (Replace '1' with your correct Index number)
+Mount-WindowsImage -ImagePath "D:\sources\install.wim" -Index 1 -Path "C:\Mount"
+
+then:
+
+# Copy the files to your staging folder
+New-Item -ItemType Directory -Force -Path "C:\ImagePrep\HealthyAppx"
+Copy-Item -Path "C:\Mount\Windows\System32\WindowsPowerShell\v1.0\Modules\Appx\*" -Destination "C:\ImagePrep\HealthyAppx" -Recurse -Force
+
+
+
+then:
+
+# Unmount the WIM and discard changes
+Dismount-WindowsImage -Path "C:\Mount" -Discard
+
+

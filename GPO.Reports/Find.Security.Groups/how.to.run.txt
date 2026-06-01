@@ -1,0 +1,8 @@
+# Basic — run and open report automatically
+pwsh -ExecutionPolicy Bypass -File C:\Temp\Find-SecurityGroupSources.ps1
+
+# Filter to specific group names to reduce noise
+pwsh -ExecutionPolicy Bypass -File C:\Temp\Find-SecurityGroupSources.ps1 -GroupNamesToSearch "AppTeam-RDP","VDI-Admins"
+
+# Custom report output path
+pwsh -ExecutionPolicy Bypass -File C:\Temp\Find-SecurityGroupSources.ps1 -ReportPath "C:\Temp\audit.html"

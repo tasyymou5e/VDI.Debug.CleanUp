@@ -1,0 +1,51 @@
+Write-Host "--- TEAMS OUTLOOK ADD-IN (TMA) VERIFICATION ---" -ForegroundColor Yellow
+
+# 1. Check MSI Installation Status (PowerShell 7 / CIM Method)
+Write-Host "[1/3] Checking MSI Registration..." -ForegroundColor Cyan
+$TMA_MSI = Get-CimInstance -ClassName Win32_Product | Where-Object { $_.Name -like "*Microsoft Teams Meeting Add-in*" }
+
+if ($TMA_MSI) {
+    Write-Host "[✓] Found: $($TMA_MSI.Name) (Version: $($TMA_MSI.Version))" -ForegroundColor Green
+} else {
+    Write-Host "[X] FAILED: TMA is not registered in MSI database." -ForegroundColor Red
+    Write-Host "    (Note: If Office was installed via Click-to-Run, it might not appear in Win32_Product. Checking files next...)" -ForegroundColor Gray
+}
+
+# 2. Check Physical File Presence
+Write-Host "`n[2/3] Checking File System..." -ForegroundColor Cyan
+$TMA_Path = "C:\Program Files (x86)\Microsoft\TeamsMeetingAddin"
+
+if (Test-Path $TMA_Path) {
+    $DLL = Get-ChildItem -Path $TMA_Path -Filter "Microsoft.Teams.AddinLoader.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($DLL) {
+        Write-Host "[✓] Found AddinLoader DLL at: $($DLL.FullName)" -ForegroundColor Green
+    } else {
+        Write-Host "[X] FAILED: DLL missing from Program Files." -ForegroundColor Red
+    }
+} else {
+    Write-Host "[X] FAILED: Directory $TMA_Path does not exist." -ForegroundColor Red
+}
+
+# 3. Check Registry Load Behavior (Machine Wide)
+Write-Host "`n[3/3] Checking Registry LoadBehavior..." -ForegroundColor Cyan
+
+# Check standard 64-bit Office path
+$RegPath64 = "HKLM:\SOFTWARE\Microsoft\Office\Outlook\Addins\TeamsAddin.FastConnect"
+# Check 32-bit Office path (WoW6432Node)
+$RegPath32 = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\Outlook\Addins\TeamsAddin.FastConnect"
+
+$ActiveRegPath = $null
+if (Test-Path $RegPath64) { $ActiveRegPath = $RegPath64 }
+elseif (Test-Path $RegPath32) { $ActiveRegPath = $RegPath32 }
+
+if ($ActiveRegPath) {
+    $LoadBehavior = (Get-ItemProperty -Path $ActiveRegPath -Name "LoadBehavior" -ErrorAction SilentlyContinue).LoadBehavior
+    if ($LoadBehavior -eq 3) {
+        Write-Host "[✓] SUCCESS: LoadBehavior is set to 3 (Load at Startup) in $ActiveRegPath" -ForegroundColor Green
+    } else {
+        Write-Host "[!] WARNING: LoadBehavior is $LoadBehavior. Outlook may have disabled it." -ForegroundColor Yellow
+        Write-Host "    Fix it by running: Set-ItemProperty -Path '$ActiveRegPath' -Name 'LoadBehavior' -Value 3" -ForegroundColor Gray
+    }
+} else {
+    Write-Host "[X] FAILED: Registry key not found. Outlook will not see the add-in." -ForegroundColor Red
+}

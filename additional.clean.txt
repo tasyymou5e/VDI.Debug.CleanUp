@@ -1,0 +1,51 @@
+# 1. DEFINE PATHS TO CLEAN
+$DefaultProfilePaths = @(
+    "C:\Users\Default\AppData\Local\Microsoft\Teams",
+    "C:\Users\Default\AppData\Local\Microsoft\TeamsPresenceAddin",
+    "C:\Users\Default\AppData\Local\Microsoft\TeamsMeetingAddin",
+    "C:\Users\Default\AppData\Local\Packages\MSTeams_8wekyb3d8bbwe",
+    "C:\Users\Default\AppData\Roaming\Microsoft\Teams"
+)
+
+Write-Host "--- STARTING DEFAULT PROFILE TEAMS CLEANUP ---" -ForegroundColor Yellow
+
+# 2. EXECUTE REMOVAL
+foreach ($Path in $DefaultProfilePaths) {
+    if (Test-Path $Path) {
+        Write-Host "Removing: $Path" -ForegroundColor Cyan
+        Remove-Item -Path $Path -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "Path not found (Already clean): $Path" -ForegroundColor Gray
+    }
+}
+
+# 3. VERIFY CLEANLINESS
+$Remaining = Get-ChildItem "C:\Users\Default\AppData" -Recurse | Where-Object { $_.Name -like "*Teams*" }
+if ($null -eq $Remaining) {
+    Write-Host "SUCCESS: Default profile is clean of Teams data." -ForegroundColor Green
+} else {
+    Write-Host "WARNING: Some Teams-related files may still exist in Default profile." -ForegroundColor Red
+}
+
+
+
+
+
+
+
+ALSO:
+
+# Load the Default User Registry Hive
+reg load HKU\DefaultTemp "C:\Users\Default\NTUSER.DAT"
+
+# Remove the 'Teams Machine Installer' or old Teams Run keys if they exist
+Remove-ItemProperty -Path "HKU\DefaultTemp\Software\Microsoft\Windows\CurrentVersion\Run" -Name "com.squirrel.Teams.Teams" -ErrorAction SilentlyContinue
+
+# Unload the Hive
+reg unload HKU\DefaultTemp
+
+
+
+
+
+

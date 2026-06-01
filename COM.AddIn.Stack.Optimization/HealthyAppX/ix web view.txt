@@ -1,0 +1,74 @@
+# Requires -Version 7.0
+# Run as Administrator
+
+# ==========================================
+# 0. PRE-FLIGHT
+# ==========================================
+Set-ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
+Write-Host "--- MICROSOFT EDGE MSI OVERLAY & DEPENDENCY REPAIR ---" -ForegroundColor Cyan
+
+$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $IsAdmin) {
+    Write-Host "[X] CRITICAL ERROR: This script must be run as Administrator!" -ForegroundColor Red
+    exit
+}
+
+# ==========================================
+# 1. LOCATE INSTALLERS
+# ==========================================
+$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { $PWD.Path }
+$EdgeMsi = Join-Path $ScriptDir "MicrosoftEdgeEnterpriseX64.msi"
+$WebView2Exe = Join-Path $ScriptDir "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+
+if (-not (Test-Path $EdgeMsi)) {
+    Write-Host "`n[X] ERROR: MicrosoftEdgeEnterpriseX64.msi not found in '$ScriptDir'." -ForegroundColor Red
+    Write-Host "    Action: Place the Enterprise MSI in the same folder as this script and run again." -ForegroundColor Yellow
+    exit
+}
+
+# ==========================================
+# 2. KILL CORRUPTED PROCESSES
+# ==========================================
+Write-Host "`n[1/4] Terminating corrupted Edge processes..." -ForegroundColor Yellow
+$ProcessesToKill = @("msedge", "msedgewebview2", "MicrosoftEdgeUpdate", "setup")
+foreach ($Proc in $ProcessesToKill) {
+    Get-Process -Name $Proc -ErrorAction SilentlyContinue | Stop-Process -Force
+}
+Write-Host "  [✓] Processes terminated." -ForegroundColor Green
+
+# ==========================================
+# 3. EXECUTE MSI OVERLAY
+# ==========================================
+Write-Host "`n[2/4] Executing MSI Overlay Installation..." -ForegroundColor Yellow
+Write-Host "  [i] The Windows Installer service will now forcefully rebuild Edge." -ForegroundColor Gray
+
+# /i = Install | /qn = Quiet/Silent | REINSTALL=ALL REINSTALLMODE=vomus = Force rewrite
+$MsiArgs = "/i `"$EdgeMsi`" /qn REINSTALL=ALL REINSTALLMODE=vomus"
+$Process = Start-Process "msiexec.exe" -ArgumentList $MsiArgs -Wait -PassThru
+
+if ($Process.ExitCode -eq 0 -or $Process.ExitCode -eq 3010) {
+    Write-Host "  [✓] SUCCESS: MSI overlay executed successfully (Exit Code: $($Process.ExitCode))." -ForegroundColor Green
+} else {
+    Write-Host "  [X] FAILED: MSI overlay exited with code: $($Process.ExitCode)." -ForegroundColor Red
+    exit
+}
+
+# ==========================================
+# 4. REPAIR DEPENDENCIES (0xc000007b FIX)
+# ==========================================
+Write-Host "`n[3/4] Repairing Edge Dependencies (AppX & WebView2)..." -ForegroundColor Yellow
+
+# A. Re-register AppX Packages (Fixes OSOT corruption)
+Write-Host "  [i] Re-registering Edge AppX manifests..." -ForegroundColor Gray
+Get-AppXPackage -AllUsers -Name "*MicrosoftEdge*" -ErrorAction SilentlyContinue | Foreach-Object {
+    Add-AppxPackage -DisableDevelopmentMode -Register "$($_.InstallLocation)\AppXManifest.xml" -ErrorAction SilentlyContinue
+}
+Write-Host "  [✓] AppX re-registration complete." -ForegroundColor Green
+
+# B. Repair WebView2 (If installer is present)
+if (Test-Path $WebView2Exe) {
+    Write-Host "  [i] Found WebView2 Installer. Forcing repair..." -ForegroundColor Gray
+    $WvProcess = Start-Process -FilePath $WebView2Exe -ArgumentList "/silent /install" -Wait -PassThru
+    Write-Host "  [✓] WebView2 repair executed (Exit Code: $($WvProcess.ExitCode))." -ForegroundColor Green
+} else {
+    Write-Host "  [!] Skipped WebView2 repair:

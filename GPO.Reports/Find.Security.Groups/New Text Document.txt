@@ -1,0 +1,19 @@
+PS C:\Temp> .\Get-FSLogixSettings.ps1
+
+[1/3] Reading FSLogix registry settings...
+InvalidArgument: C:\Temp\Get-FSLogixSettings.ps1:138
+Line |
+ 138 |  …   } elseif ($def.ValueMap -and $def.ValueMap.ContainsKey([int]$rawVal …
+     |                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | Cannot convert value "VHDX" to type "System.Int32". Error: "The input string 'VHDX' was not in a correct format."
+      56 defined settings read | 13 additional values found
+[2/3] Reading FSLogix local security groups...
+[3/3] Generating HTML report...
+Out-File: C:\Temp\Get-FSLogixSettings.ps1:430
+Line |
+ 430 |  $html | Out-File -FilePath $ReportPath -Encoding UTF8
+     |          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     | Could not find a part of the path 'C:\Users\user1\Downloads\AFRC.VDI\FSLogix_Settings_20260521_205635.html'.
+Report saved: C:\Users\user1\Downloads\AFRC.VDI\FSLogix_Settings_20260521_205635.html
+
+Done — Configured: 4  Policy: 0  Direct: 4  Not Set: 52  Extra: 13

@@ -1,0 +1,26 @@
+GPO
+
+
+Local computer policy
+	computer configuration
+		administrative templates
+			FSLogix
+			Horizon Blast
+			Omnissa DEM
+			Omnissa Horizon Agent Configuration
+			Omnissa Horizon Client Configuration
+			OneDrive
+			Start Menu and Taskbar
+			
+			
+
+User Configuration
+	administrative templates
+		Horizon Blast
+		Microsoft Edge
+		Microsoft Teams
+		Omnissa DEM
+		Omnissa Horizon Agent Configuration
+		Omnissa Horizon Client Configuration
+		OneDriveOutlook For Windows
+		Start Menu and Taskbar

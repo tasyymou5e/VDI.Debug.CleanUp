@@ -1,0 +1,83 @@
+# List of Appx packages to remove and de-provision
+$AppsToRemove = @(
+    "AdobeAcrobatDCCoreApp",
+    "NotepadPlusPlus",
+    "Microsoft.Todos",
+    "Microsoft.PowerAutomateDesktop",
+    "Microsoft.BingSearch",
+    "MicrosoftWindows.CrossDevice",
+    "Microsoft.Windows.DevHome"
+)
+
+foreach ($App in $AppsToRemove) {
+    Write-Host "Processing removal for: $App" -ForegroundColor Cyan
+    
+    # 1. Remove from all existing user profiles on the golden image
+    Get-AppxPackage -Name "*$App*" -AllUsers | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+    
+    # 2. Remove from the Windows provisioning manifest (stops it for new users)
+    Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -like "*$App*" } | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+    
+    Write-Host "Completed: $App" -ForegroundColor Green
+}
+
+Write-Host "Cleanup script finished." -ForegroundColor Yellow
+
+
+
+
+
+# Remove left over directories in the Default profile
+Remove-Item -Path "C:\Users\Default\AppData\Local\Microsoft\Teams" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "C:\Users\Default\AppData\Local\Microsoft\OneDrive" -Recurse -Force -ErrorAction SilentlyContinue
+
+
+
+
+
+
+
+
+
+
+
+# List of services to disable for VDI optimization
+$ServicesToDisable = @(
+    "SysMain",          # Formerly Superfetch - Unnecessary for VDI/High-speed storage
+    "WSearch",          # Windows Search - High CPU/Disk I/O during indexing
+    "DiagTrack",        # Connected User Experiences and Telemetry
+    "dmwappushservice", # WAP Push Message Routing Service (Telemetry)
+    "MapsBroker",       # Downloaded Maps Manager
+    "RetailDemo",       # Retail Demo Service
+    "SDRSVC",           # Windows Backup service
+    "WbioSrvc"          # Windows Biometric Service (If not using Hello/Fingerprint)
+)
+
+foreach ($Service in $ServicesToDisable) {
+    if (Get-Service -Name $Service -ErrorAction SilentlyContinue) {
+        Write-Host "Disabling Service: $Service" -ForegroundColor Cyan
+        Set-Service -Name $Service -StartupType Disabled
+        Stop-Service -Name $Service -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Host "Service optimization complete." -ForegroundColor Green
+
+
+Clear Event Logs:
+
+Get-EventLog -LogName * | ForEach-Object {Clear-EventLog -LogName $_.Log}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
